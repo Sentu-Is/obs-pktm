@@ -10,6 +10,7 @@ Windows helper for OBS recordings with global hotkeys, OBS WebSocket, RTSS timer
 - The timer is written to RivaTuner Statistics Server shared memory, so it can appear over fullscreen games.
 - When the countdown reaches zero, the app shows a large `RESET / WAITING` message in RTSS and waits for OBS to finish the current recording before starting the next one.
 - When a recording starts, the app verifies that OBS is actually recording and that the current scene screenshot is not black.
+- Black-scene startup failures are renamed as `failN` and moved to the configured trash folder together with their input log.
 - Finished recordings can be renamed with a configurable prefix, normalized window name, and `[n]` counter.
 - Manual recordings that are too short can be moved to a separate folder.
 - Session actions are written to `logs/last_session.jsonl`.
@@ -64,7 +65,7 @@ Example:
 
 Portable paths support `${USERPROFILE}`, `%USERPROFILE%`, and `~`.
 
-If `recording_rename.directory` is empty or does not exist, the app tries to ask OBS for its current recording directory. If `manual_short_directory` is empty, short manual recordings are moved to a `TRASH` folder next to the original OBS output.
+If `recording_rename.directory` is empty or does not exist, the app tries to ask OBS for its current recording directory. If `manual_short_directory` is empty, short manual recordings and black-scene startup failures are moved to a `TRASH` folder next to the original OBS output.
 
 ## Run
 

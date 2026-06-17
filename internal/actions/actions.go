@@ -308,7 +308,11 @@ func (l *Library) startRecordChecked(generation uint64) error {
 		return fmt.Errorf("the current scene is black; additionally, the failed recording could not be stopped: %w", stopErr)
 	}
 
-	failPath, renameErr := renameFailedRecording(outputPath)
+	trashDir := ""
+	if outputPath != "" {
+		trashDir = l.failedRecordingTrashDir(outputPath)
+	}
+	failedMove, renameErr := moveFailedRecordingToTrash(outputPath, trashDir)
 	l.finishRecordingStopped(generation)
 	if renameErr != nil {
 		l.logError("failed_recording_rename_failed", "black scene recording rename failed", map[string]any{
@@ -320,11 +324,14 @@ func (l *Library) startRecordChecked(generation uint64) error {
 	}
 
 	l.logError("failed_recording_renamed", "black scene recording renamed", map[string]any{
-		"generation": generation,
-		"old_path":   outputPath,
-		"new_path":   failPath,
+		"generation":         generation,
+		"old_path":           outputPath,
+		"new_path":           failedMove.VideoPath,
+		"input_log_old_path": failedMove.InputLogOldPath,
+		"input_log_new_path": failedMove.InputLogPath,
+		"trash_directory":    filepath.Dir(failedMove.VideoPath),
 	})
-	return fmt.Errorf("the current scene is black; recording was stopped and the file was renamed to %s", failPath)
+	return fmt.Errorf("the current scene is black; recording was stopped and moved to %s", failedMove.VideoPath)
 }
 
 func (l *Library) startupCheckRules() StartupCheckRules {
@@ -411,6 +418,17 @@ func (l *Library) processManualCompletedRecording(generation uint64, outputPath 
 	return l.renameCompletedRecording(generation, outputPath)
 }
 
+func (l *Library) failedRecordingTrashDir(outputPath string) string {
+	l.stateMu.Lock()
+	dir := l.rename.ManualShortDir
+	l.stateMu.Unlock()
+
+	if dir == "" {
+		return filepath.Join(filepath.Dir(outputPath), "TRASH")
+	}
+	return dir
+}
+
 func (l *Library) moveManualShortRecording(generation uint64, outputPath string) (bool, error) {
 	rules, scene, startedAt, ok := l.activeRecordingInfo(generation)
 	if !ok || rules.ManualShortDuration <= 0 {
@@ -451,7 +469,7 @@ func (l *Library) moveManualShortRecording(generation uint64, outputPath string)
 		return false, fmt.Errorf("could not create the short-recordings directory %q: %w", rules.ManualShortDir, err)
 	}
 
-	inputLog, hasInputLog := findInputLog(outputPath)
+	inputLog, hasInputLog := findInputLogWithRetry(outputPath)
 	targetVideo := filepath.Join(rules.ManualShortDir, filepath.Base(outputPath))
 
 	l.logInfo("manual_short_move_started", "moving short manual recording", map[string]any{
@@ -612,7 +630,7 @@ func (l *Library) renameCompletedRecording(generation uint64, outputPath string)
 	})
 
 	targetVideo := targetBase + ".mp4"
-	inputLog, hasInputLog := findInputLog(outputPath)
+	inputLog, hasInputLog := findInputLogWithRetry(outputPath)
 	l.logInfo("recording_rename_attempt", "renaming recording video", map[string]any{
 		"old_path": outputPath,
 		"new_path": targetVideo,
@@ -822,37 +840,81 @@ func isBlackScreenshot(data []byte) (bool, error) {
 	return average <= blackAverageLimit && brightRatio <= blackBrightRatio, nil
 }
 
-func renameFailedRecording(outputPath string) (string, error) {
+type failedRecordingMove struct {
+	VideoPath       string
+	InputLogOldPath string
+	InputLogPath    string
+}
+
+func moveFailedRecordingToTrash(outputPath, trashDir string) (failedRecordingMove, error) {
 	if outputPath == "" {
-		return "", fmt.Errorf("OBS did not return the recorded file path")
+		return failedRecordingMove{}, fmt.Errorf("OBS did not return the recorded file path")
 	}
 
-	dir := filepath.Dir(outputPath)
+	if trashDir == "" {
+		trashDir = filepath.Join(filepath.Dir(outputPath), "TRASH")
+	}
+	if err := os.MkdirAll(trashDir, 0755); err != nil {
+		return failedRecordingMove{}, fmt.Errorf("could not create the failed-recordings directory %q: %w", trashDir, err)
+	}
+
 	ext := filepath.Ext(outputPath)
-	target, err := nextFailPath(dir, ext)
+	targetBase, err := nextFailBase(trashDir, ext)
 	if err != nil {
-		return "", err
+		return failedRecordingMove{}, err
 	}
 
-	var lastErr error
-	for i := 0; i < 10; i++ {
-		if err := os.Rename(outputPath, target); err == nil {
-			return target, nil
-		} else {
-			lastErr = err
-		}
-		time.Sleep(200 * time.Millisecond)
+	targetVideo := targetBase + ext
+	inputLog, hasInputLog := findInputLogWithRetry(outputPath)
+
+	if err := renameWithRetry(outputPath, targetVideo); err != nil {
+		return failedRecordingMove{}, err
 	}
-	return "", lastErr
+
+	move := failedRecordingMove{VideoPath: targetVideo}
+	if hasInputLog {
+		move.InputLogOldPath = inputLog
+		move.InputLogPath = targetBase + inputLogExtension
+		if err := renameWithRetry(inputLog, move.InputLogPath); err != nil {
+			return move, fmt.Errorf("video moved to %q, but input log could not be moved from %q to %q: %w", targetVideo, inputLog, move.InputLogPath, err)
+		}
+	}
+
+	return move, nil
+}
+
+func renameFailedRecording(outputPath string) (string, error) {
+	move, err := moveFailedRecordingToTrash(outputPath, "")
+	return move.VideoPath, err
 }
 
 func nextFailPath(dir, ext string) (string, error) {
+	base, err := nextFailBase(dir, ext)
+	if err != nil {
+		return "", err
+	}
+	return base + ext, nil
+}
+
+func nextFailBase(dir, ext string) (string, error) {
 	for i := 1; i < 10000; i++ {
-		path := filepath.Join(dir, fmt.Sprintf("fail%d%s", i, ext))
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			return path, nil
-		} else if err != nil {
-			return "", err
+		base := filepath.Join(dir, fmt.Sprintf("fail%d", i))
+		candidates := []string{
+			base + ext,
+			base + inputLogExtension,
+			base + ".inputlog" + inputLogExtension,
+		}
+		available := true
+		for _, path := range candidates {
+			if _, err := os.Stat(path); err == nil {
+				available = false
+				break
+			} else if !os.IsNotExist(err) {
+				return "", err
+			}
+		}
+		if available {
+			return base, nil
 		}
 	}
 	return "", fmt.Errorf("no hay nombres fail disponibles en %s", dir)
@@ -1164,6 +1226,16 @@ func findInputLog(videoPath string) (string, bool) {
 		}
 	}
 	return bestPath, bestPath != ""
+}
+
+func findInputLogWithRetry(videoPath string) (string, bool) {
+	for i := 0; i < 10; i++ {
+		if path, ok := findInputLog(videoPath); ok {
+			return path, true
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return "", false
 }
 
 func renameWithRetry(oldPath, newPath string) error {
