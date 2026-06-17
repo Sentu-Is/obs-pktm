@@ -1,0 +1,21 @@
+# Local configuration and secrets
+config.json
+
+# Runtime logs
+logs/
+*.log
+
+# Build outputs
+*.exe
+*.exe~
+*.dll
+*.test
+coverage.out
+dist/
+build/
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

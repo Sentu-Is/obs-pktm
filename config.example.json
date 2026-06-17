@@ -1,0 +1,22 @@
+{
+  "timer": {
+    "duration_seconds": 600
+  },
+  "obs_websocket": {
+    "url": "ws://localhost:4455",
+    "password": "",
+    "request_timeout_seconds": 5
+  },
+  "recording_rename": {
+    "prefix": "",
+    "min_duration_seconds": 0,
+    "min_size_megabytes": 0,
+    "directory": "",
+    "manual_short_duration_seconds": 0,
+    "manual_short_directory": ""
+  },
+  "recording_check": {
+    "startup_delay_seconds": 1,
+    "startup_timeout_seconds": 5
+  }
+}
