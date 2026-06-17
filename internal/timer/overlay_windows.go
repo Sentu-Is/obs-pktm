@@ -19,7 +19,6 @@ type Overlay struct {
 	rtss     *rtssOSD
 	stop     chan struct{}
 	onFinish func()
-	running  bool
 }
 
 func NewOverlay(options Options) (*Overlay, error) {
@@ -58,7 +57,6 @@ func (o *Overlay) Start() error {
 	o.mu.Lock()
 	o.rtss = client
 	o.stop = stop
-	o.running = true
 	o.mu.Unlock()
 
 	go o.run(client, stop, secondsLeft)
@@ -71,7 +69,6 @@ func (o *Overlay) Stop() {
 	stop := o.stop
 	o.rtss = nil
 	o.stop = nil
-	o.running = false
 	o.mu.Unlock()
 
 	if stop != nil {
@@ -104,7 +101,6 @@ func (o *Overlay) run(client *rtssOSD, stop <-chan struct{}, secondsLeft int) {
 				current := o.rtss == client
 				var onFinish func()
 				if o.rtss == client {
-					o.running = false
 					onFinish = o.onFinish
 				}
 				o.mu.Unlock()
